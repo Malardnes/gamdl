@@ -29,11 +29,22 @@ class AppleMusicSongDownloader:
                 "." + media.stream_info.file_format.value,
             )
 
+        original_artist = media.tags.artist
+        original_album_artist = media.tags.album_artist
+
+        if isinstance(media.tags.artist, list):
+            media.tags.artist = media.tags.artist[0] if media.tags.artist else None
+        if isinstance(media.tags.album_artist, list):
+            media.tags.album_artist = media.tags.album_artist[0] if media.tags.album_artist else None
+
         download_item.final_path = self.base.get_final_path(
             media.tags,
             ".m4a",
             media.playlist_tags,
         )
+
+        media.tags.artist = original_artist
+        media.tags.album_artist = original_album_artist
 
         if media.playlist_tags:
             download_item.playlist_file_path = self.base.get_playlist_file_path(

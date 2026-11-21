@@ -9,15 +9,70 @@ from .enums import MediaFileFormat, MediaRating, MediaType
 class Lyrics:
     synced: str = None
     unsynced: str = None
+    lyricist: str = None
+
+
+import re
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ParsedArtists:
+    """Результат парсинга артистов из заголовка трека."""
+    main: list[str] = field(default_factory=list)       # Основные артисты
+    featured: list[str] = field(default_factory=list)     # Featured артисты
+    remixers: list[str] = field(default_factory=list)     # Ремиксеры / VIP / Edit
+    extras: list[str] = field(default_factory=list)       # Прочее (Mixed, From...)
+
+
+# === РЕГУЛЯРКИ ===
+# Порядок важен: более специфичные паттерны ПЕРЕД более общими
+
+_FEATURED_RE = re.compile(
+    r'\s*[\(\[]'                        # открывающая скобка ( или [
+    r'(?:feat\.?|ft\.?|featuring|with)\s+'  # ключевое слово
+    r'(.+?)'                            # содержимое (ленивое)
+    r'[\)\]]',                          # закрывающая скобка
+    re.IGNORECASE,
+)
+
+_REMIX_RE = re.compile(
+    r'\s*[\(\[]'                        # скобка
+    r'(.+?)'                            # имя ремиксера
+    r'\s+(?:remix|vip|edit|bootleg|rework|flip|mix)'  # тип
+    r'[\)\]]',                          # закрывающая скобка
+    re.IGNORECASE,
+)
+
+_MIXED_RE = re.compile(
+    r'\s*[\(\[]mixed[\)\]]',
+    re.IGNORECASE,
+)
+
+_FROM_RE = re.compile(
+    r'\s*[\(\[]'
+    r'(?:from|from\s+the)\s+'
+    r'(.+?)'
+    r'[\)\]]',
+    re.IGNORECASE,
+)
+
+_BUSTED_RE = re.compile(
+    r'\s*[\(\[]'
+    r'(?:busted|busted\s+by|remixed)\s+(?:by\s+)?'
+    r'(.+?)'
+    r'[\)\]]',
+    re.IGNORECASE,
+)
 
 
 @dataclass
 class MediaTags:
     album: str = None
-    album_artist: str = None
+    album_artist: str | list[str] = None
     album_id: int = None
     album_sort: str = None
-    artist: str = None
+    artist: str | list[str] = None
     artist_id: int = None
     artist_sort: str = None
     comment: str = None
@@ -42,21 +97,48 @@ class MediaTags:
     track: int = None
     track_total: int = None
     xid: str = None
+    director: str = None
+    www: str = None
+    isrc: str = None
+    label: str = None
+    lyricist: str = None
+    encoding_tool: str = None
+    encoder: str = None
+    upc: str = None
+    featured_artists: str | list[str] = None
+    remixed_artists: str | list[str] = None
+    initial_key: str = None
+    bpm: int = None
+    mood: str = None
+    workName: str = None
+    movementName: str = None
+    movementCount: str = None
+    movementNumber: str = None
 
-    def as_mp4_tags(self, date_format: str = None) -> dict:
-        disc_mp4 = [
-            self.disc if self.disc is not None else 0,
-            self.disc_total if self.disc_total is not None else 0,
-        ]
-        if disc_mp4[0] == 0 and disc_mp4[1] == 0:
-            disc_mp4 = None
+    @staticmethod
+    def _ensure_list(value: str | list[str] | None) -> list[str] | None:
+        """
+        Приводит значение к list[str] для mutagen MP4.
+        - None → None
+        - "A, B" → ["A, B"]  (строка остаётся одним элементом)
+        - ["A", "B"] → ["A", "B"]
+        """
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value if value else None
+        return [value]
 
-        track_mp4 = [
-            self.track if self.track is not None else 0,
-            self.track_total if self.track_total is not None else 0,
-        ]
-        if track_mp4[0] == 0 and track_mp4[1] == 0:
-            track_mp4 = None
+    def as_mp4_tags(self, date_format: str | None = None) -> dict:
+        # === DISC ===
+        disc_val = self.disc if self.disc is not None else 0
+        disc_total_val = self.disc_total if self.disc_total is not None else 0
+        disc_mp4 = [(disc_val, disc_total_val)] if (disc_val or disc_total_val) else None
+
+        # === TRACK ===
+        track_val = self.track if self.track is not None else 0
+        track_total_val = self.track_total if self.track_total is not None else 0
+        track_mp4 = [(track_val, track_total_val)] if (track_val or track_total_val) else None
 
         if isinstance(self.date, datetime.date):
             if date_format is None:
@@ -68,12 +150,15 @@ class MediaTags:
         else:
             date_mp4 = None
 
+        artist_list = self._ensure_list(self.artist)
+        album_artist_list = self._ensure_list(self.album_artist)
+
         mp4_tags = {
             "\xa9alb": self.album,
-            "aART": self.album_artist,
+            "aART": album_artist_list,
             "plID": self.album_id,
             "soal": self.album_sort,
-            "\xa9ART": self.artist,
+            "\xa9ART": artist_list,
             "atID": self.artist_id,
             "soar": self.artist_sort,
             "\xa9cmt": self.comment,
@@ -96,13 +181,46 @@ class MediaTags:
             "sonm": self.title_sort,
             "trkn": track_mp4,
             "xid ": self.xid,
+            "\xa9con": self.director,
+            "\xa9dir": self.director,
+            "----:com.apple.iTunes:WWW": self.www,
+            "----:com.apple.iTunes:ISRC": self.isrc,
+            "----:com.apple.iTunes:PUBLISHER": self.label,
+            "----:com.apple.iTunes:LABEL": self.label,
+            "----:com.apple.iTunes:LYRICIST": self.lyricist,
+            "----:com.apple.iTunes:ENCODER": self.encoding_tool,
+            "----:com.apple.iTunes:ENCODEDBY": self.encoder,
+            "----:com.apple.iTunes:UPC": self.upc,
+            "----:com.apple.iTunes:FEATURING": self.featured_artists,
+            "----:com.apple.iTunes:REMIXER": self.remixed_artists,
+            "----:com.apple.iTunes:INITIALKEY": self.initial_key,
+            "tmpo": self.bpm,
+            "mood": self.mood,
+            "\xa9wrk": self.workName,
+            "\xa9mvn": self.movementName,
+            "\xa9mvc": self.movementCount,
+            "\xa9mvi": self.movementNumber,
         }
 
-        return {
-            k: ([v] if not isinstance(v, bool) else v)
-            for k, v in mp4_tags.items()
-            if v is not None
-        }
+        return_dict = {}
+        for k, v in mp4_tags.items():
+            if v is None:
+                continue
+            
+            if isinstance(v, bool):
+                return_dict[k] = v
+            elif k.startswith("----:"):
+                if isinstance(v, list):
+                    # Если вдруг пришел список артистов, объединяем в строку через запятую
+                    return_dict[k] = "; ".join(map(str, v)).encode("utf-8")
+                else:
+                    return_dict[k] = [v.encode("utf-8") if isinstance(v, str) else v]
+            elif isinstance(v, list):
+                return_dict[k] = v
+            else:
+                return_dict[k] = [v]
+                
+        return return_dict
 
 
 @dataclass

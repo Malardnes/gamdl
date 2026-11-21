@@ -1,7 +1,10 @@
 import asyncio
 import datetime
+import json
 import re
+import sys
 from typing import AsyncGenerator, Callable
+from urllib.parse import unquote
 from xml.dom import minidom
 from xml.etree import ElementTree
 
@@ -17,13 +20,23 @@ from .exceptions import (
     GamdlInterfaceMediaNotStreamableError,
 )
 from .types import (
+    _BUSTED_RE,
+    _FEATURED_RE,
+    _FROM_RE,
+    _MIXED_RE,
+    _REMIX_RE,
     AppleMusicMedia,
     DecryptionKeyAv,
     Lyrics,
     MediaFileFormat,
+    ParsedArtists,
     StreamInfo,
     StreamInfoAv,
 )
+
+from gamdl import __version__
+
+sys.stdout.reconfigure(encoding='utf-8')
 
 logger = structlog.get_logger(__name__)
 
@@ -94,46 +107,65 @@ class AppleMusicSongInterface:
         else:
             log.debug("no_lyrics_data")
 
-    def _get_lyrics(
-        self,
-        lyrics_ttml: str,
-    ) -> Lyrics:
-        lyrics_ttml_et = ElementTree.fromstring(lyrics_ttml)
-        unsynced_lyrics = []
-        synced_lyrics = []
+    def _get_lyrics(self, lyrics_ttml: str) -> Lyrics:
+        try:
+            lyrics_ttml_et = ElementTree.fromstring(lyrics_ttml)
+        except ElementTree.ParseError as e:
+            raise ValueError(f"Invalid TTML lyrics: {e}") from e
+    
+        unsynced_lyrics: list[list[str]] = []
+        synced_lyrics: list[str] = []
         index = 1
-
+        lyricist = ""
+    
+        for meta in lyrics_ttml_et.findall(
+            ".//{http://music.apple.com/lyric-ttml-internal}iTunesMetadata"
+        ):
+            writers = meta.findall(
+                ".//{http://music.apple.com/lyric-ttml-internal}songwriter"
+            )
+            if writers:
+                lyricist = ", ".join(
+                    w.text for w in writers if w.text
+                ).strip()
+    
+        if self.synced_lyrics_format == SyncedLyricsFormat.TTML:
+            return Lyrics(
+                synced=lyrics_ttml,
+                unsynced=None,
+                lyricist=lyricist or None,
+            )
+    
         for div in lyrics_ttml_et.iter("{http://www.w3.org/ns/ttml}div"):
-            stanza = []
-            unsynced_lyrics.append(stanza)
-
+            stanza: list[str] = []
+    
             for p in div.iter("{http://www.w3.org/ns/ttml}p"):
-                if p.text is not None:
-                    stanza.append(p.text)
-
+                line_text = "".join(p.itertext()).strip()
+                if not line_text:
+                    continue
+    
+                stanza.append(line_text)
+    
                 if p.attrib.get("begin"):
                     if self.synced_lyrics_format == SyncedLyricsFormat.LRC:
                         synced_lyrics.append(self._get_lyrics_line_lrc(p))
-
-                    if self.synced_lyrics_format == SyncedLyricsFormat.SRT:
-                        synced_lyrics.append(self._get_lyrics_line_srt(index, p))
-
-                    if self.synced_lyrics_format == SyncedLyricsFormat.TTML:
-                        if not synced_lyrics:
-                            synced_lyrics.append(
-                                minidom.parseString(lyrics_ttml).toprettyxml()
-                            )
-                        continue
-
+                    elif self.synced_lyrics_format == SyncedLyricsFormat.SRT:
+                        synced_lyrics.append(
+                            self._get_lyrics_line_srt(index, p)
+                        )
                     index += 1
-
+    
+            if stanza:
+                unsynced_lyrics.append(stanza)
+    
         return Lyrics(
-            synced="\n".join(synced_lyrics + ["\n"]) if synced_lyrics else None,
+            synced="\n".join(synced_lyrics) if synced_lyrics else None,
             unsynced=(
-                "\n\n".join(["\n".join(lyric_group) for lyric_group in unsynced_lyrics])
+                "\n\n".join("\n".join(group) for group in unsynced_lyrics)
                 if unsynced_lyrics
                 else None
             ),
+            lyricist=lyricist or None,
         )
 
     def _parse_ttml_timestamp(
@@ -575,6 +607,94 @@ class AppleMusicSongInterface:
 
         return stream_info_av
 
+    def split_artist_string(self, artist_str: str) -> list[str]:
+        """
+        Разбивает строку артистов на список.
+        Обрабатывает: запятые, &, 'feat.', 'and'
+        
+        'Artist1, Artist2 & Artist3' → ['Artist1', 'Artist2', 'Artist3']
+        """
+        if not artist_str:
+            return []
+    
+        # Заменяем & и 'and' на запятые (но не внутри скобок)
+        normalized = re.sub(r'\s*&\s*', ', ', artist_str)
+        normalized = re.sub(r'\s+and\s+', ', ', normalized, flags=re.IGNORECASE)
+    
+        # Разбиваем по запятым
+        parts = [p.strip() for p in normalized.split(',')]
+    
+        # Убираем пустые
+        return [p for p in parts if p]
+    
+    def parse_track_artists(
+        self,
+        main_artists: list[str],
+        track_name: str,
+    ) -> ParsedArtists:
+        """
+        Парсит заголовок трека для извлечения featured, remixers и пр.
+        
+        Args:
+            main_artists: Список основных артистов из AMP API
+            track_name: Полное название трека (например, 
+                        "Song (feat. X) [Y Remix]")
+        
+        Returns:
+            ParsedArtists с разложенными по категориям артистами
+        """
+        result = ParsedArtists(main=list(main_artists))
+    
+        if not track_name:
+            return result
+    
+        remaining = track_name
+    
+        # 1. Извлекаем featured
+        for match in _FEATURED_RE.finditer(remaining):
+            featured_str = match.group(1).strip()
+            result.featured.extend(self.split_artist_string(featured_str))
+        remaining = _FEATURED_RE.sub('', remaining)
+    
+        # 2. Извлекаем ремиксеров (ПОСЛЕ featured, чтобы не перепутать)
+        for match in _REMIX_RE.finditer(remaining):
+            remixer_str = match.group(1).strip()
+            result.remixers.extend(self.split_artist_string(remixer_str))
+        remaining = _REMIX_RE.sub('', remaining)
+
+        for match in _BUSTED_RE.finditer(remaining):
+            remixer_str = match.group(1).strip()
+            result.remixers.extend(self.split_artist_string(remixer_str))
+        remaining = _BUSTED_RE.sub('', remaining)
+    
+        # 3. Проверяем (Mixed)
+        if _MIXED_RE.search(remaining):
+            result.extras.append("Mixed")
+            remaining = _MIXED_RE.sub('', remaining)
+    
+        # 4. Извлекаем "From ..." (саундтреки)
+        for match in _FROM_RE.finditer(remaining):
+            result.extras.append(f"From: {match.group(1).strip()}")
+        remaining = _FROM_RE.sub('', remaining)
+    
+        # Убираем дубликаты, сохраняя порядок
+        result.main = list(dict.fromkeys(result.main))
+        result.featured = list(dict.fromkeys(result.featured))
+        result.remixers = list(dict.fromkeys(result.remixers))
+    
+        # Убираем из featured тех, кто уже в main
+        main_set = {a.lower() for a in result.main}
+        result.featured = [f for f in result.featured if f.lower() not in main_set]
+    
+        # Убираем из remixers тех, кто уже в main или featured
+        featured_set = {a.lower() for a in result.featured}
+        result.remixers = [
+            r for r in result.remixers
+            if r.lower() not in main_set and r.lower() not in featured_set
+        ]
+    
+        return result
+
     async def get_media(
         self,
         media: AppleMusicMedia,
@@ -584,7 +704,7 @@ class AppleMusicSongInterface:
                 await (
                     self.base.apple_music_api.get_library_song(media.media_id)
                     if media.is_library
-                    else self.base.apple_music_api.get_song(media.media_id)
+                    else self.base.apple_music_api.get_full_song(media.media_id)
                 )
             )["data"][0]
 
@@ -636,18 +756,22 @@ class AppleMusicSongInterface:
                 media.is_library,
             )
 
+        lyrics_text = (
+            media.lyrics.synced or media.lyrics.unsynced
+            if media.lyrics
+            else None
+        )
+
         if playback:
-            media.tags = await self.base.get_tags_from_asset_info(
-                playback["songList"][0]["assets"][0]["metadata"],
-                media.lyrics.unsynced if media.lyrics else None,
-                self.use_album_date,
-            )
+            metadata = playback["songList"][0]["assets"][0]["metadata"]
         else:
-            media.tags = await self.base.get_tags_from_asset_info(
-                webplayback["songList"][0]["assets"][0]["metadata"],
-                media.lyrics.unsynced if media.lyrics else None,
-                self.use_album_date,
-            )
+            metadata = webplayback["songList"][0]["assets"][0]["metadata"]
+
+        media.tags = await self.base.get_tags_from_asset_info(
+            metadata,
+            lyrics_text,
+            self.use_album_date,
+        )
 
         if not self.skip_stream_info:
             media.stream_info = await self.get_stream_info(
@@ -677,5 +801,43 @@ class AppleMusicSongInterface:
                 )
 
         media.partial = False
+
+        # print(json.dumps(media.media_metadata, indent=2, ensure_ascii=False))
+
+        media.tags.www = unquote(media.media_metadata["attributes"]["url"])
+        media.tags.isrc = media.media_metadata["attributes"]["isrc"]
+        media.tags.label = media.media_metadata["relationships"]["albums"]["data"][0]["attributes"].get("recordLabel", "")
+        media.tags.upc = media.media_metadata["relationships"]["albums"]["data"][0]["attributes"].get("upc", "")
+
+        media.tags.lyricist = getattr(media.lyrics, 'lyricist', '') or None
+
+        media.tags.encoding_tool = f'gamdl {__version__}'
+        media.tags.encoder = f'gamdl'
+
+        attrs = media.media_metadata["attributes"]
+        for key in ["movementNumber", "movementCount", "movementName", "workName"]:
+            if value := attrs.get(key):
+                setattr(media.tags, key, value)
+
+        media.tags.artist = media.media_metadata.get("artistNames", media.tags.artist)
+        if media.media_metadata.get("albumArtistNames", []):
+            media.tags.album_artist = media.media_metadata.get("albumArtistNames", media.tags.album_artist)
+
+        parsed = self.parse_track_artists(
+            main_artists=media.tags.artist,
+            track_name=media.tags.title,
+        )
+
+        # Формируем полный список артистов в правильном порядке:
+        # 1. Основные → 2. Featured → 3. Ремиксеры
+        full_artist_list = parsed.main + parsed.featured + parsed.remixers
+
+        # Перезаписываем теги
+        media.tags.artist = full_artist_list if full_artist_list else media.tags.artist
+        media.tags.featured_artists = parsed.featured if parsed.featured else media.tags.featured_artists
+        media.tags.remixed_artists = parsed.remixers if parsed.remixers else media.tags.remixed_artists
+
+        # Сохраняем разбор в кастомные атомы (опционально)
+        # media.tags._parsed_artists = parsed  # если нужно использовать потом
 
         yield media

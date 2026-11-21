@@ -145,7 +145,7 @@ The file is created automatically on first run. Command-line arguments override 
 | `--language`, `-l`              | Metadata language                                                 | `en-US`                       |
 | **Interface Options**           |                                                                   |                               |
 | `--cover-format`                | Cover format                                                      | `jpg`                         |
-| `--cover-size`                  | Cover size in pixels                                              | `1200`                        |
+| `--cover-size`                  | Cover size in pixels                                              | `5000`                        |
 | `--wvd-path`                    | .wvd file path                                                    | -                             |
 | `--use-wrapper`                 | Use wrapper for account, playback, and decryption requests        | `false`                       |
 | **Song Options**                |                                                                   |                               |

@@ -126,7 +126,7 @@ class AppleMusicBaseInterface:
         cls,
         apple_music_api: AppleMusicApi,
         cover_format: CoverFormat = CoverFormat.JPG,
-        cover_size: int = 1200,
+        cover_size: int = 5000,
         wvd_path: str | None = None,
         itunes_api: ItunesApi | None = None,
         wrapper_api: WrapperApi | None = None,
@@ -157,7 +157,7 @@ class AppleMusicBaseInterface:
         self,
         album_id: int,
     ) -> dict | None:
-        return (await self.apple_music_api.get_album(album_id))["data"][0]
+        return (await self.apple_music_api.get_full_album(album_id))["data"][0]
 
     async def get_decryption_key(
         self,

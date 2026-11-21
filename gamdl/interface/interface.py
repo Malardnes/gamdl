@@ -190,7 +190,7 @@ class AppleMusicInterface:
                         media_id,
                     )
                     if is_library
-                    else self.base.apple_music_api.get_album(
+                    else self.base.apple_music_api.get_full_album(
                         media_id,
                     )
                 )

@@ -1,3 +1,4 @@
+import json
 import re
 from http.cookiejar import MozillaCookieJar
 from urllib.parse import parse_qs, urlparse
@@ -35,6 +36,9 @@ from .wrapper import WrapperApi
 
 logger = structlog.get_logger(__name__)
 
+import asyncio
+from async_lru import alru_cache
+from typing import Optional
 
 class AppleMusicApi:
     def __init__(
@@ -298,6 +302,307 @@ class AppleMusicApi:
 
         return response_json
 
+    async def _resolve_artist_names(
+        self,
+        artists_data: list[dict],
+    ) -> tuple[list[str], int]:
+        """
+        Возвращает (список имён артистов, количество).
+        Делает минимальные запросы к /artists/{id} БЕЗ include/views.
+        """
+        count = len(artists_data)
+        if count == 0:
+            return [], 0
+
+        if count == 1:
+            # Для одного артиста делаем запрос, чтобы получить имя
+            artist_id = artists_data[0].get("id")
+            if not artist_id:
+                return [], count
+            try:
+                artist = await self.get_artist(artist_id, include="", views="", limit=1)
+                name = artist["data"][0]["attributes"]["name"]
+                return [name], count
+            except Exception as e:
+                logger.warning(f"Failed to fetch artist {artist_id}: {e}")
+                return [], count
+
+        # Несколько артистов — параллельные запросы БЕЗ include
+        tasks = [
+            self.get_artist(artist["id"], include="", views="", limit=1)
+            for artist in artists_data
+            if "id" in artist
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        names: list[str] = []
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to fetch artist: {result}")
+                continue
+            try:
+                name = result["data"][0]["attributes"]["name"]
+                if name:
+                    names.append(name)
+            except (KeyError, IndexError, TypeError) as e:
+                logger.warning(f"Malformed artist response: {e}")
+
+        return names, count
+
+    async def get_full_album(self, album_id: str) -> dict:
+        """
+        Возвращает альбом с полностью обогащёнными треками.
+        Каждый трек в relationships.tracks.data будет иметь:
+        - artistNames: list[str]
+        - albumArtistNames: list[str]
+        - artistsCount / albumArtistsCount
+        - relationships.albums.data[0].attributes (recordLabel, upc, artistName)
+        """
+        log = logger.bind(action="get_full_album", album_id=album_id)
+
+        album_response = await self.get_album(album_id)
+        album_data_list = album_response.get("data")
+        if not album_data_list:
+            raise GamdlApiResponseError(
+                f"No 'data' in album response for {album_id}",
+                content=album_response,
+                status_code=None,
+            )
+
+        album = album_data_list[0]
+
+        # === Обогащаем артистов альбома ===
+        album_artists_data = (
+            album.get("relationships", {})
+            .get("artists", {})
+            .get("data", [])
+        )
+        album_artist_names, album_artists_count = await self._resolve_artist_names(
+            album_artists_data
+        )
+        album["albumArtistNames"] = album_artist_names
+        album["albumArtistsCount"] = album_artists_count
+        if album_artist_names:
+            album["attributes"]["artistName"] = ", ".join(album_artist_names)
+
+        # === Обогащаем каждый трек ===
+        tracks_data = (
+            album.get("relationships", {})
+            .get("tracks", {})
+            .get("data", [])
+        )
+
+        if tracks_data:
+            # Параллельное обогащение всех треков
+            tasks = [
+                self._enrich_album_track(track, album)
+                for track in tracks_data
+            ]
+            enriched_tracks = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for i, result in enumerate(enriched_tracks):
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"Failed to enrich track {tracks_data[i].get('id')}: {result}"
+                    )
+                    # Оставляем трек как есть, без обогащения
+                    continue
+                tracks_data[i] = result
+
+        log.debug(
+            "success",
+            album_id=album_id,
+            tracks_count=len(tracks_data),
+            album_artists=album_artist_names,
+        )
+
+        # print(json.dumps(album, indent=2, ensure_ascii=False))
+
+        return {"data": [album]}
+
+    async def _enrich_album_track(self, track: dict, album: dict) -> dict:
+        """
+        Обогащает отдельный трек из альбома данными об артистах и альбоме.
+        """
+        # === Трековые артисты ===
+        artists_data = (
+            track.get("relationships", {})
+            .get("artists", {})
+            .get("data", [])
+        )
+
+        if artists_data:
+            # Есть relationships.artists → резолвим по ID
+            artist_names, artists_count = await self._resolve_artist_names(artists_data)
+        else:
+            # Нет relationships.artists → запрашиваем полный трек
+            track_id = track.get("id")
+            artist_names = []
+            artists_count = 0
+
+            if track_id:
+                try:
+                    full_song_response = await self.get_song(track_id)
+                    full_song_list = full_song_response.get("data", [])
+                    if full_song_list:
+                        full_artists_data = (
+                            full_song_list[0]
+                            .get("relationships", {})
+                            .get("artists", {})
+                            .get("data", [])
+                        )
+                        artist_names, artists_count = await self._resolve_artist_names(
+                            full_artists_data
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch full song {track_id}: {e}")
+
+            # Fallback если ничего не помогло
+            if not artist_names:
+                raw_artist = track.get("attributes", {}).get("artistName", "")
+                artist_names = [raw_artist] if raw_artist else []
+                artists_count = len(artist_names)
+
+        track["artistNames"] = artist_names
+        track["artistsCount"] = artists_count
+
+        if artist_names:
+            track["attributes"]["artistName"] = ", ".join(artist_names)
+
+        # === Альбомные артисты (из родительского альбома, без доп. запроса) ===
+        track["albumArtistNames"] = album.get("albumArtistNames", [])
+        track["albumArtistsCount"] = album.get("albumArtistsCount", 0)
+
+        # === Встраиваем album relationship в трек ===
+        if "relationships" not in track:
+            track["relationships"] = {}
+
+        album_attrs = album.get("attributes", {})
+        track["relationships"]["albums"] = {
+            "data": [
+                {
+                    "id": album.get("id"),
+                    "type": "albums",
+                    "attributes": {
+                        "artistName": album_attrs.get("artistName", ""),
+                        "recordLabel": album_attrs.get("recordLabel", ""),
+                        "upc": album_attrs.get("upc", ""),
+                        "name": album_attrs.get("name", ""),
+                    },
+                }
+            ]
+        }
+
+        return track
+
+    async def enrich_song_artists(self, song: dict) -> dict:
+        """
+        Обогащает песню:
+        - artistNames: list[str]      ← массив для атомов ©ART
+        - albumArtistNames: list[str] ← массив для атомов aART
+        - artistName / albumArtist: str (для обратной совместимости)
+        """
+        # === TRACK ARTISTS ===
+        song = song.get("data", [{}])[0]
+        artists_data = (
+            song.get("relationships", {})
+            .get("artists", {})
+            .get("data", [])
+        )
+        artist_names, artists_count = await self._resolve_artist_names(artists_data)
+
+        # Сохраняем МАССИВ (для mutagen)
+        song["artistNames"] = artist_names
+        song["artistsCount"] = artists_count
+
+        # Строковая версия (для совместимости)
+        if artist_names:
+            song["attributes"]["artistName"] = ", ".join(artist_names)
+
+        # === ALBUM ARTISTS ===
+        album_rel = (
+            song.get("relationships", {})
+            .get("albums", {})
+            .get("data", [])
+        )
+
+        if album_rel:
+            album_id = album_rel[0].get("id")
+            if album_id:
+                try:
+                    album_response = await self.get_album(album_id)
+                    album_data = album_response.get("data", [{}])[0]
+                    album_attrs = album_data.get("attributes", {})
+                    album_artists_data = (
+                        album_data.get("relationships", {})
+                        .get("artists", {})
+                        .get("data", [])
+                    )
+
+                    album_artist_names, album_artists_count = (
+                        await self._resolve_artist_names(album_artists_data)
+                    )
+
+                    # Сохраняем МАССИВ в песню
+                    song["albumArtistNames"] = album_artist_names
+                    song["albumArtistsCount"] = album_artists_count
+
+                    # Обновляем attributes альбома в relationships
+                    if "attributes" not in album_rel[0]:
+                        album_rel[0]["attributes"] = {}
+
+                    # Копируем нужные поля из полного ответа альбома
+                    for key in ("artistName", "recordLabel", "upc"):
+                        if key in album_attrs:
+                            album_rel[0]["attributes"][key] = album_attrs[key]
+
+                    # Перезаписываем artistName массивом через join
+                    if album_artist_names:
+                        album_rel[0]["attributes"]["artistName"] = ", ".join(album_artist_names)
+                        song["attributes"]["albumArtist"] = ", ".join(album_artist_names)
+                    else:
+                        song["attributes"]["albumArtist"] = album_attrs.get("artistName", "")
+
+                except GamdlApiResponseError as e:
+                    logger.warning(f"Failed to fetch album {album_id}: {e}")
+                    song["albumArtistNames"] = []
+                    song["albumArtistsCount"] = 0
+        else:
+            song["albumArtistNames"] = []
+            song["albumArtistsCount"] = 0
+
+        # songResult: json = {}
+        # songResult["data"][0] = song
+        songResult: dict = {"data": [song]}
+        return songResult
+
+    async def enrich_album_artists(self, album: dict) -> dict:
+        """Аналогичное обогащение для альбома."""
+        artists_data = (
+            album.get("relationships", {})
+            .get("artists", {})
+            .get("data", [])
+        )
+
+        art_names, artists_count = await self._resolve_artist_names(artists_data)
+
+        if art_names:
+            album["attributes"]["artistName"] = ", ".join(art_names)
+
+        album["artistsCount"] = artists_count
+        return album
+
+    async def get_full_song(self, song_id: str) -> dict:
+        song_response = await self.get_song(song_id)
+        
+        # Обогащаем артистами + альбомом за минимальное время
+        song = await self.enrich_song_artists(song_response)
+
+        # print(json.dumps(song, indent=2, ensure_ascii=False))
+        
+        return song
+
+    @alru_cache(maxsize=256)
     async def get_song(
         self,
         song_id: str,
@@ -316,8 +621,6 @@ class AppleMusicApi:
                 "include": include,
             },
         )
-
-        log.debug("success", song=song)
 
         return song
 
@@ -361,6 +664,7 @@ class AppleMusicApi:
 
         return uploaded_video
 
+    @alru_cache(maxsize=256)
     async def get_album(
         self,
         album_id: str,
@@ -377,6 +681,8 @@ class AppleMusicApi:
                 "extend": extend,
             },
         )
+
+        # print(json.dumps(album, indent=2, ensure_ascii=False))
 
         log.debug("success", album=album)
 
@@ -405,6 +711,7 @@ class AppleMusicApi:
 
         return playlist
 
+    @alru_cache(maxsize=256)
     async def get_artist(
         self,
         artist_id: str,
