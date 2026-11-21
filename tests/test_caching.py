@@ -140,8 +140,8 @@ class CoverCacheTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 requests,
                 [
-                    "https://artwork.example.test/1200x1200bb.jpg",
-                    "https://artwork.example.test/1200x1200bb.png",
+                    "https://artwork.example.test/5000x5000bb.jpg",
+                    "https://artwork.example.test/5000x5000bb.png",
                 ],
             )
             self.assertEqual(await cover.get_cover_bytes(format="png"), png)
@@ -240,7 +240,7 @@ class CoverCacheTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first, b"image-data")
             self.assertIs(first, second)
             self.assertEqual(len(requests), 1)
-            self.assertIn("/1200x1200.jpg", str(requests[0].url))
+            self.assertIn("/5000x5000.jpg", str(requests[0].url))
             await cover_a.get_cover_bytes(width=600, height=600)
             await cover_b.get_cover_bytes(format="png")
             await cover_a.get_cover_bytes(width=600, height=600)

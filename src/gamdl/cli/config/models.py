@@ -54,8 +54,8 @@ class OutputConfig:
     exclude_tags: list[str] = field(default_factory=list)
     save_cover: bool = False
     cover_format: str = "jpg"
-    embedded_cover_size: CoverSize = 1200
-    file_cover_size: CoverSize = 1200
+    embedded_cover_size: CoverSize = 5000
+    file_cover_size: CoverSize = 5000
     no_lyrics_file: bool = False
     lyrics_file_format: str = "lrc"
     embedded_lyrics_format: str = "text"

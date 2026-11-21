@@ -570,7 +570,7 @@ Use `--date-tag-template "%Y"` to override the template for a command. Full ISO 
 
 #### Artwork (`output.save_cover`, `output.cover_format`, `output.embedded_cover_size`, `output.file_cover_size`)
 
-Embedded artwork is normally included when tagging is enabled. Saving a separate artwork file is disabled by default. Choose `jpg` (default) or `png` for cover format. Both cover sizes default to **1200 × 1200 pixels**, independently configurable:
+Embedded artwork is normally included when tagging is enabled. Saving a separate artwork file is disabled by default. Choose `jpg` (default) or `png` for cover format. Both cover sizes default to **5000 × 5000 pixels**, independently configurable:
 
 ```yaml
 output:

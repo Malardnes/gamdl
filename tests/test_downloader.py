@@ -906,7 +906,7 @@ class DownloaderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status, "downloaded")
         cover.get_cover_bytes.assert_awaited_once_with(
-            width=1200, height=1200, format="png"
+            width=5000, height=5000, format="png"
         )
         self.assertEqual((output.parent / "Cover.png").read_bytes(), PNG)
         self.assertFalse((output.parent / "Cover.jpg").exists())
@@ -920,7 +920,7 @@ class DownloaderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status, "skipped")
         cover.get_cover_bytes.assert_awaited_once_with(
-            width=1200, height=1200, format="png"
+            width=5000, height=5000, format="png"
         )
         song.get_stream.assert_not_awaited()
         self.assertEqual((output.parent / "Cover.png").read_bytes(), PNG)
@@ -1106,7 +1106,7 @@ class DownloaderTests(unittest.IsolatedAsyncioTestCase):
         downloader, _ = self.downloader()
         song = self.song()
         destination = self.directory / "invalid-cover-size.m4a"
-        for size in (0, -1, 2.5, True, "1200", "MAX", None):
+        for size in (0, -1, 2.5, True, "5000", "MAX", None):
             with self.subTest(size=size):
                 with self.assertRaisesRegex(ValueError, "embedded_cover_size"):
                     await downloader.get_bytes(song, embedded_cover_size=size)
@@ -1176,7 +1176,7 @@ class DownloaderTests(unittest.IsolatedAsyncioTestCase):
         song.get_cover.return_value = cover
         data = await downloader.get_bytes(song, cover_format="png")
         cover.get_cover_bytes.assert_awaited_once_with(
-            width=1200, height=1200, format="png"
+            width=5000, height=5000, format="png"
         )
         output = self.directory / "returned.m4a"
         output.write_bytes(data)

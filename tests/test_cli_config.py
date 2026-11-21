@@ -364,10 +364,10 @@ class CliConfigTests(unittest.TestCase):
         from gamdl.cli.config.loader import click_default_map
 
         defaults = load_config(None)
-        self.assertEqual(defaults.output.embedded_cover_size, 1200)
-        self.assertEqual(defaults.output.file_cover_size, 1200)
-        self.assertEqual(click_default_map(defaults)["embedded_cover_size"], 1200)
-        self.assertEqual(click_default_map(defaults)["file_cover_size"], 1200)
+        self.assertEqual(defaults.output.embedded_cover_size, 5000)
+        self.assertEqual(defaults.output.file_cover_size, 5000)
+        self.assertEqual(click_default_map(defaults)["embedded_cover_size"], 5000)
+        self.assertEqual(click_default_map(defaults)["file_cover_size"], 5000)
         self._write("output:\n  embedded_cover_size: 450\n  file_cover_size: 2400\n")
         config = load_config(self.path)
         self.assertEqual(config.output.embedded_cover_size, 450)
@@ -433,7 +433,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual(click_default_map(configured)["file_cover_size"], "max")
 
         for name in ("embedded_cover_size", "file_cover_size"):
-            for value in (0, -1, 2.5, True, "1200", "MAX", "unlimited", None):
+            for value in (0, -1, 2.5, True, "5000", "MAX", "unlimited", None):
                 with self.subTest(name=name, invalid=value):
                     self._write(yaml.safe_dump({"output": {name: value}}))
                     with self.assertRaisesRegex(ConfigError, f"output.{name}"):

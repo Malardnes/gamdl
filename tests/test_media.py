@@ -224,19 +224,19 @@ class SongOperationTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(
-            cover.get_formatted_url(width=1200, height=1200),
+            cover.get_formatted_url(width=5000, height=5000),
             "https://is1-ssl.mzstatic.com/image/thumb/example/"
-            "1200x1200bb.jpg?version=1",
+            "5000x5000bb.jpg?version=1",
         )
         self.assertEqual(
-            cover.get_formatted_url(width=1200, height=1200, format="png"),
+            cover.get_formatted_url(width=5000, height=5000, format="png"),
             "https://is1-ssl.mzstatic.com/image/thumb/example/"
-            "1200x1200bb.png?version=1",
+            "5000x5000bb.png?version=1",
         )
         self.assertEqual(
-            cover.get_formatted_url(width=1200, height=1200, format=CoverFormat.PNG),
+            cover.get_formatted_url(width=5000, height=5000, format=CoverFormat.PNG),
             "https://is1-ssl.mzstatic.com/image/thumb/example/"
-            "1200x1200bb.png?version=1",
+            "5000x5000bb.png?version=1",
         )
         cover_ac = Cover.from_metadata({"url": "https://example.test/{w}x{h}ac.jpg"})
         self.assertEqual(
@@ -264,7 +264,7 @@ class SongOperationTests(unittest.IsolatedAsyncioTestCase):
                     "https://artwork.example.test/image/10000x0w-999.png?version=1",
                 )
         cover = Cover.from_metadata({"url": "https://example.test/{w}x{h}bb.jpg"})
-        for width, height in (("max", 1200), (1200, "max"), ("MAX", "MAX")):
+        for width, height in (("max", 5000), (5000, "max"), ("MAX", "MAX")):
             with (
                 self.subTest(width=width, height=height),
                 self.assertRaises(ValueError),
@@ -406,7 +406,7 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(len(lyrics.lines), 3)
         self.assertEqual(lyrics.language, "en")
         self.assertEqual(lyrics.lines[0].text, "Hello world")
-        self.assertEqual((lyrics.lines[0].start, lyrics.lines[0].end), (1200, 2500))
+        self.assertEqual((lyrics.lines[0].start, lyrics.lines[0].end), (5000, 2500))
         self.assertTrue(lyrics.is_synced)
         self.assertTrue(lyrics.is_syllable_synced)
         self.assertEqual(

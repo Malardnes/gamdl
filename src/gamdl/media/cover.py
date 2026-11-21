@@ -98,8 +98,8 @@ class Cover:
     async def get_cover_bytes(
         self,
         *,
-        width: CoverSize = 1200,
-        height: CoverSize = 1200,
+        width: CoverSize = 5000,
+        height: CoverSize = 5000,
         format: CoverFormat | str = CoverFormat.JPG,
     ) -> bytes | None:
         """Retrieve artwork bytes with the optional attached CoverCache."""

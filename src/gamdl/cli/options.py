@@ -212,17 +212,17 @@ class RipOptions:
         option(
             "--embedded-cover-size",
             type=CoverSizeType(),
-            help="Embedded cover pixels or max (default: 1200)",
+            help="Embedded cover pixels or max (default: 5000)",
         ),
-    ] = 1200
+    ] = 5000
     file_cover_size: Annotated[
         CoverSize,
         option(
             "--file-cover-size",
             type=CoverSizeType(),
-            help="Saved cover pixels or max (default: 1200)",
+            help="Saved cover pixels or max (default: 5000)",
         ),
-    ] = 1200
+    ] = 5000
     no_tag: Annotated[
         bool,
         option(

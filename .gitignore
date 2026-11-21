@@ -21,3 +21,6 @@ target/
 .env.*
 !.env.example
 /.local/
+Apple Music
+Untitled-1.txt
+cookies.txt
